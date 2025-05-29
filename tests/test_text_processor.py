@@ -154,6 +154,46 @@ class TestTextProcessor(unittest.TestCase):
         expected = "(test, ok)"
         
         self.assertEqual(result, expected)
+    
+    def test_weight_keyword_filtering(self):
+        """測試帶權重的關鍵詞過濾"""
+        input_prompt = "((1girl, JK, a cute JK wearing serafuku dancing on the street, nude, (NSFW:1.1), black and white serafuku):1.2)"
+        filter_words = "nude, NSFW, loli"
+        
+        result = self.processor.filter_prompt(input_prompt, filter_words)
+        expected = "((1girl, JK, a cute JK wearing serafuku dancing on the street, black and white serafuku):1.2)"
+        
+        self.assertEqual(result, expected)
+    
+    def test_various_weight_formats(self):
+        """測試各種權重格式"""
+        input_prompt = "(red:1.5), (blue:0.8), green, (yellow:2.0)"
+        filter_words = "red, blue"
+        
+        result = self.processor.filter_prompt(input_prompt, filter_words)
+        expected = "green, (yellow:2.0)"
+        
+        self.assertEqual(result, expected)
+    
+    def test_weight_keyword_case_insensitive(self):
+        """測試權重關鍵詞的大小寫不敏感"""
+        input_prompt = "(RED:1.5), (Blue:0.8), (NSFW:1.2)"
+        filter_words = "red, blue, nsfw"
+        
+        result = self.processor.filter_prompt(input_prompt, filter_words)
+        expected = ""
+        
+        self.assertEqual(result, expected)
+    
+    def test_mixed_weight_and_normal(self):
+        """測試混合權重和普通關鍵詞"""
+        input_prompt = "beautiful girl, (red:1.5), blue eyes, (nude:0.8), anime style"
+        filter_words = "red, nude"
+        
+        result = self.processor.filter_prompt(input_prompt, filter_words)
+        expected = "beautiful girl, blue eyes, anime style"
+        
+        self.assertEqual(result, expected)
 
 
 if __name__ == '__main__':

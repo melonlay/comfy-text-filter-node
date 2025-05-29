@@ -23,25 +23,23 @@ class TextProcessor:
         Returns:
             str: 過濾後的prompt
         """
-        if not input_prompt or not filter_words:
+        if not input_prompt:
             return input_prompt
             
         # 解析要過濾的詞彙
-        filter_set = self._parse_filter_words(filter_words)
+        filter_set = self._parse_filter_words(filter_words) if filter_words else set()
         
         result = input_prompt
         
-        # 步驟1: 移除所有逗號以及括號前後的空格
-        result = self._normalize_spaces(result)
+        # 步驟1: 移除匹配的關鍵字（包括帶權重的）
+        if filter_set:
+            result = self._remove_matching_keywords(result, filter_set)
         
-        # 步驟2: 按逗號分割項目進行完全匹配過濾
-        result = self._filter_by_comma_separated_items(result, filter_set)
+        # 步驟2: 後處理清理（總是執行，清理孤立權重等）
+        result = self._post_process_cleanup(result)
         
-        # 步驟3: 移除所有空括號和連續逗號
-        result = self._clean_empty_brackets_and_commas(result)
-        
-        # 步驟4: 恢復逗號後的空格格式
-        result = self._restore_comma_spacing(result)
+        # 步驟3: 格式化空格
+        result = self._format_spacing(result)
         
         return result.strip()
     
@@ -50,36 +48,29 @@ class TextProcessor:
         words = [word.strip().lower() for word in filter_words.split(self.separator)]
         return {word for word in words if word}
     
-    def _normalize_spaces(self, text: str) -> str:
-        """步驟1: 移除所有逗號以及括號前後的空格"""
-        # 移除括號前後的空格
-        text = re.sub(r'\s*([(\[{])\s*', r'\1', text)
-        text = re.sub(r'\s*([)\]}])\s*', r'\1', text)
-        # 移除逗號前後的空格
-        text = re.sub(r'\s*,\s*', ',', text)
-        return text
+    def _remove_matching_keywords(self, text: str, filter_set: Set[str]) -> str:
+        """移除匹配的關鍵字，包括帶權重的格式"""
+        # 處理括號結構
+        result = self._process_brackets_and_filter(text, filter_set)
+        return result
     
-    def _filter_by_comma_separated_items(self, text: str, filter_set: Set[str]) -> str:
-        """步驟2: 按逗號分割的項目進行完全匹配過濾"""
-        # 遞歸處理括號內容
-        return self._process_text_recursive(text, filter_set)
-    
-    def _process_text_recursive(self, text: str, filter_set: Set[str]) -> str:
-        """遞歸處理文字，處理括號結構"""
+    def _process_brackets_and_filter(self, text: str, filter_set: Set[str]) -> str:
+        """處理括號結構並過濾關鍵字"""
         result = []
         i = 0
         
         while i < len(text):
             if text[i] in '([{':
-                # 處理括號
-                bracket_type = text[i]
+                # 找到匹配的結束括號
+                bracket_start = i
                 bracket_end = self._find_matching_bracket(text, i)
                 
                 if bracket_end != -1:
                     # 提取括號內容
+                    bracket_type = text[i]
                     inner_content = text[i+1:bracket_end]
                     
-                    # 檢查權重語法
+                    # 檢查括號後是否有權重
                     weight = ""
                     next_pos = bracket_end + 1
                     if next_pos < len(text) and text[next_pos] == ':':
@@ -89,12 +80,12 @@ class TextProcessor:
                             next_pos += len(weight)
                     
                     # 遞歸處理括號內容
-                    processed_inner = self._process_text_recursive(inner_content, filter_set)
+                    filtered_inner = self._process_brackets_and_filter(inner_content, filter_set)
                     
-                    # 如果處理後還有內容，保留括號
-                    if processed_inner.strip():
+                    # 如果過濾後還有內容，保留括號
+                    if filtered_inner.strip():
                         closing_bracket = self._get_closing_bracket(bracket_type)
-                        result.append(bracket_type + processed_inner + closing_bracket + weight)
+                        result.append(bracket_type + filtered_inner + closing_bracket + weight)
                     
                     i = next_pos
                 else:
@@ -102,35 +93,57 @@ class TextProcessor:
                     result.append(text[i])
                     i += 1
             else:
-                # 處理普通文字，直到下一個括號
+                # 處理普通文字段落
                 segment_end = self._find_next_bracket(text, i)
                 segment = text[i:segment_end]
                 
-                if segment.strip():
-                    filtered_segment = self._filter_comma_separated_segment(segment, filter_set)
-                    if filtered_segment:
-                        result.append(filtered_segment)
+                if segment:
+                    # 過濾這個段落
+                    filtered_segment = self._filter_comma_separated_items(segment, filter_set)
+                    result.append(filtered_segment)
                 
                 i = segment_end
         
         return ''.join(result)
     
-    def _filter_comma_separated_segment(self, segment: str, filter_set: Set[str]) -> str:
-        """過濾逗號分割的段落"""
-        # 按逗號分割
-        items = segment.split(',')
+    def _filter_comma_separated_items(self, text: str, filter_set: Set[str]) -> str:
+        """過濾逗號分隔的項目"""
+        if not text.strip():
+            return text
+            
+        # 分割項目
+        items = text.split(',')
         filtered_items = []
         
         for item in items:
-            if item:  # 跳過空項目
-                # 檢查是否完全匹配過濾詞彙（不區分大小寫）
-                item_lower = item.lower()
-                should_filter = item_lower in filter_set
-                
+            item_stripped = item.strip()
+            if item_stripped:
+                # 檢查是否應該過濾
+                should_filter = self._should_filter_item(item_stripped, filter_set)
                 if not should_filter:
                     filtered_items.append(item)
+            else:
+                # 保留空項目（用於保持格式）
+                filtered_items.append(item)
         
         return ','.join(filtered_items)
+    
+    def _should_filter_item(self, item: str, filter_set: Set[str]) -> bool:
+        """判斷項目是否應該被過濾"""
+        item_lower = item.lower()
+        
+        # 檢查完全匹配
+        if item_lower in filter_set:
+            return True
+        
+        # 檢查權重語法：keyword:number
+        weight_match = re.match(r'^(.+?):([\d.]+)$', item_lower)
+        if weight_match:
+            keyword = weight_match.group(1)
+            if keyword in filter_set:
+                return True
+        
+        return False
     
     def _find_matching_bracket(self, text: str, start: int) -> int:
         """找到匹配的結束括號"""
@@ -161,45 +174,45 @@ class TextProcessor:
             i += 1
         return i
     
-    def _clean_empty_brackets_and_commas(self, text: str) -> str:
-        """步驟3: 移除所有空括號和連續逗號"""
+    def _post_process_cleanup(self, text: str) -> str:
+        """後處理清理：移除空括號、重複逗號、孤立權重"""
         # 重複清理直到沒有變化
         prev_text = ""
         while prev_text != text:
             prev_text = text
             
-            # 移除空括號 (包括只有空格的括號)
+            # 移除空括號
             text = re.sub(r'\(\s*\)', '', text)
             text = re.sub(r'\[\s*\]', '', text)
             text = re.sub(r'\{\s*\}', '', text)
             
-            # 移除連續逗號
-            text = re.sub(r',+', ',', text)
+            # 移除孤立的權重（只移除括號內只有權重的情況）
+            text = re.sub(r'\(\s*:[\d.]+\s*\)', '', text)
+            
+            # 移除重複的逗號
+            text = re.sub(r',\s*,+', ',', text)
             
             # 移除開頭和結尾的逗號
-            text = re.sub(r'^,+|,+$', '', text)
+            text = re.sub(r'^\s*,+|,+\s*$', '', text)
             
-            # 移除括號前後多餘的逗號
-            text = re.sub(r',+([(\[{])', r'\1', text)
-            text = re.sub(r'([)\]}]),+', r'\1', text)
+            # 移除括號內開頭和結尾的逗號
+            text = re.sub(r'([(\[{])\s*,', r'\1', text)
+            text = re.sub(r',\s*([)\]}])', r'\1', text)
             
-            # 移除括號內尾隨的逗號
-            text = re.sub(r',+([)\]}])', r'\1', text)
-            
-            # 移除括號前的逗號（當括號前沒有其他內容時）
-            text = re.sub(r'^([(\[{])', r'\1', text)
+            # 修正括號內開頭的多餘空格
+            text = re.sub(r'([(\[{])\s+', r'\1', text)
         
         return text
     
-    def _restore_comma_spacing(self, text: str) -> str:
-        """步驟4: 恢復逗號後的空格格式"""
-        # 在逗號後添加空格，但不在括號前
-        text = re.sub(r',(?![)\]}])', ', ', text)
+    def _format_spacing(self, text: str) -> str:
+        """格式化空格：在逗號後添加空格"""
+        # 標準化空格
+        text = re.sub(r'\s+', ' ', text)
         
-        # 處理括號間的分隔：如果兩個元素之間沒有逗號，添加逗號和空格
-        # 匹配：字母/數字 + 括號 或 括號 + 字母/數字
-        text = re.sub(r'([a-zA-Z0-9])([(\[{])', r'\1, \2', text)
-        text = re.sub(r'([)\]}])([a-zA-Z0-9])', r'\1, \2', text)
-        text = re.sub(r'([)\]}])([(\[{])', r'\1, \2', text)
+        # 確保逗號後有空格（但不在括號內的結尾）
+        text = re.sub(r',(?!\s)', ', ', text)
+        
+        # 修正多餘的空格
+        text = re.sub(r'\s+', ' ', text)
         
         return text 
